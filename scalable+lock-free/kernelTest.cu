@@ -25,19 +25,21 @@ uint32_t simpleRand(uint32_t* seed){
 
 class GPUTracker {
 public:
-    static const size_t MAX_TRACKED_OBJECTS = 262144;
+    static const size_t MAX_TRACKED_OBJECTS = 1048576;
     uint32_t* trackingArena;
     uint32_t* stats;
 
-    __device__ bool 
-    recordAllocation(void* ptr, size_t size, uint32_t threadId, TestSlabArena* arena) {
+    __device__ 
+    bool recordAllocation(void* ptr, size_t size, uint32_t threadId, TestSlabArena* arena) {
         if (!ptr) 
             return false;
 
         // simple index calc for GPU
         size_t index = getIndexForPtr(ptr, arena);
-        if (index >= MAX_TRACKED_OBJECTS) 
+        if (index >= MAX_TRACKED_OBJECTS){
+            intr::atomic::add_system(&stats[2], 1u);       // failures
             return false;
+        }
         
         uint32_t newValue = (static_cast<uint32_t>(size & 0xFFFF) << 16) | (threadId & 0xFFFF);
         uint32_t expected = 0;
@@ -82,54 +84,13 @@ private:
     size_t getIndexForPtr(void* ptr, TestSlabArena* arena) {
         if (!ptr) 
             return MAX_TRACKED_OBJECTS;
-        
-        auto slabInd = arena->slabIndexFor(ptr);
-        if(slabInd >= TestSlabArena::SLAB_COUNT) 
-            return MAX_TRACKED_OBJECTS;
 
-        auto& proxy = arena->proxyAt(slabInd).data;
-        size_t objectSz = proxy.getSize();
-        if(objectSz == 0) 
-            return MAX_TRACKED_OBJECTS;
-        
-        // calc object index within slab
-        auto& slab = arena->slabAt(slabInd);
-        char* slabStart = static_cast<char*>(static_cast<void*>(&slab));
-        char* ptrChar = static_cast<char*>(ptr);
-        size_t offset = ptrChar - slabStart;
-
-        size_t maxObj = proxy.slabObjCount(objectSz);
-        size_t maskElemCount = (maxObj + proxy.SLAB_ELEM_BIT_SIZE - 1) / proxy.SLAB_ELEM_BIT_SIZE;
-        size_t maskOverhead = maskElemCount * sizeof(typename TestSlabArena::slabProxyType::allocMaskElem);
-
-        if(offset < maskOverhead) 
-            return MAX_TRACKED_OBJECTS;
-        
-        size_t objectOffset = offset - maskOverhead;
-        if(objectOffset % objectSz != 0) 
-            return MAX_TRACKED_OBJECTS;
-
-        size_t objectInd = objectOffset / objectSz;
-        if(objectInd >= maxObj) 
-            return MAX_TRACKED_OBJECTS;
-
-        // total index calculation
-        size_t globalInd = 0;
-        for(size_t i = 0; i < slabInd; i++) {
-            auto& prevProxy = arena->proxyAt(i).data;
-            size_t prevSize = prevProxy.getSize();
-            if(prevSize > 0) {
-                globalInd += prevProxy.slabObjCount(prevSize);
-            } else {
-                // safe estimate
-                globalInd += 256; 
-            }
-            if(globalInd >= MAX_TRACKED_OBJECTS) 
-                return MAX_TRACKED_OBJECTS;
-        }
-        globalInd += objectInd;
-        
-        return (globalInd < MAX_TRACKED_OBJECTS) ? globalInd : MAX_TRACKED_OBJECTS;
+        if (!ptr) 
+        return MAX_TRACKED_OBJECTS;
+    
+        // simple hash 
+        uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+        return (addr >> 3) % MAX_TRACKED_OBJECTS;      
     }
 
 }; // end of class
@@ -158,23 +119,20 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
             void* ptr = allocator.alloc();
             
             if(ptr && localCount < 64) {
-                if(tracker->recordAllocation(ptr, objSize, tid, arena)) {
-                    uint32_t vid = simpleRand(&seed) % 0xFFFFu;
-                    localPtrs[localCount]  = ptr;
-                    localSizes[localCount] = objSize;
-                    localIds[localCount]   = vid;
-                    localCount++;
-                    
-                    // write test pattern
-                    if(objSize >= 4) {
-                        uint32_t* intPtr = static_cast<uint32_t*>(ptr);
-            uint32_t new_val = (tid << 16) | (vid & 0xFFFF);
-            uint32_t old_val = intr::atomic::exch_system(intPtr,new_val);
-                    }
-                } else {
-                    // tracking failed, free immediately
-                    TestAllocator freeAllocator(*arena, objSize);
-                    freeAllocator.free(ptr);
+                // Always store locally, regardless of tracking success
+                localPtrs[localCount] = ptr;
+                localSizes[localCount] = objSize;
+                localIds[localCount] = simpleRand(&seed) % 0xFFFFu;
+                localCount++;
+                
+                // Try to track, but don't free if tracking fails
+                tracker->recordAllocation(ptr, objSize, tid, arena);
+                
+                // Write test pattern
+                if(objSize >= 4) {
+                    uint32_t* intPtr = static_cast<uint32_t*>(ptr);
+                    uint32_t new_val = (tid << 16) | (localIds[localCount-1] & 0xFFFF);
+                    intr::atomic::exch_system(intPtr, new_val);
                 }
             }
         } else {
@@ -220,9 +178,8 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
     // cleanup
     for(int j = 0; j < localCount; j++) {
         TestAllocator allocator(*arena, localSizes[j]);
-        if(allocator.free(localPtrs[j])) {
-            tracker->recordFree(localPtrs[j], tid, arena);
-        }
+        allocator.free(localPtrs[j]); 
+        tracker->recordFree(localPtrs[j], tid, arena); 
     }
 } // end of alloc
 

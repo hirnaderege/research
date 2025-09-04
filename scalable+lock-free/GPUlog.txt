@@ -10,15 +10,15 @@ Multiprocessors: 56
 Launching 4096 GPU threads...
 
 GPU Results:
-Duration: 1543ms
+Duration: 1386ms
 Threads: 4096
-Allocs: 1232894
-Frees: 1232832
-Failures: 408498
-Leaks: 62
-Throughput: 1598007 ops/sec
-Success rate: 85.7875%
-:( 62 leaks detected!
+Allocs: 1238634
+Frees: 1238578
+Failures: 384786
+Leaks: 56
+Throughput: 1787310 ops/sec
+Success rate: 86.5553%
+:( 56 leaks detected!
 
 === GPU Stress Test ===
 Launching 16384 threads for stress test...
@@ -26,31 +26,31 @@ Launching 16384 threads for stress test...
 GPU Stress Results:
 Duration: 3000ms
 Total Threads: 16384
-Allocs: 726746
-Frees: 726746
-Failures: 41951
+Allocs: 763651
+Frees: 763651
+Failures: 43745
 Leaks: 0
-Throughput: 484497 ops/sec
+Throughput: 509100 ops/sec
 :) No leaks under extreme GPU contention
 
 === CPU vs GPU Comparison ===
 CPU Results:
-Duration: 322ms
+Duration: 328ms
 Successful Allocs: 1000
-CPU Throughput: 6211 ops/sec
+CPU Throughput: 6097 ops/sec
 
 === GPU Allocator Test ===
 Launching 4096 GPU threads...
 
 GPU Results:
-Duration: 1273ms
+Duration: 1143ms
 Threads: 4096
-Allocs: 1223193
-Frees: 1223135
-Failures: 411101
-Leaks: 58
-Throughput: 1921703 ops/sec
-Success rate: 85.6129%
-:( 58 leaks detected!
+Allocs: 1219807
+Frees: 1219739
+Failures: 403599
+Leaks: 68
+Throughput: 2134335 ops/sec
+Success rate: 85.8045%
+:( 68 leaks detected!
 
 All GPU tests completed!

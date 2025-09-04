@@ -1,6 +1,6 @@
 /.vscode
 /cuda.cu
 /cuneo
-/hi.cpp
+
 *.exe
 *.o
