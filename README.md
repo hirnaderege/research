@@ -152,7 +152,7 @@ Note: Performance varies based on GPU architecture and workload characteristics.
 This allocator was developed as part of undergraduate research into GPU memory management challenges. The project explores fundamental questions about achieving thread safety at GPU scales, 
 where traditional concurrent programming approaches must be carefully adapted for massively parallel environments.
 
-See the accompanying [research paper] (https://redhawks-my.sharepoint.com/:w:/r/personal/hderege_seattleu_edu/_layouts/15/Doc.aspx?sourcedoc=%7B2D7765F6-A8D2-4585-949A-FAC93D915430%7D&file=hderege%20Research%20Paper.docx&action=default&mobileredirect=true&DefaultItemOpen=1&wdOrigin=MARKETING.WORD.SIGNIN%2CAPPHOME-WEB.JUMPBACKIN&wdPreviousSession=3d0e52e9-9317-4437-b62e-f55cfddd4d57&wdPreviousSessionSrc=AppHomeWeb&ct=1757695043269) for detailed analysis of race conditions, synchronization strategies, and experimental methodology.
+See the accompanying [research paper](https://redhawks-my.sharepoint.com/:w:/r/personal/hderege_seattleu_edu/_layouts/15/Doc.aspx?sourcedoc=%7B2D7765F6-A8D2-4585-949A-FAC93D915430%7D&file=hderege%20Research%20Paper.docx&action=default&mobileredirect=true&DefaultItemOpen=1&wdOrigin=MARKETING.WORD.SIGNIN%2CAPPHOME-WEB.JUMPBACKIN&wdPreviousSession=3d0e52e9-9317-4437-b62e-f55cfddd4d57&wdPreviousSessionSrc=AppHomeWeb&ct=1757695043269) for detailed analysis of race conditions, synchronization strategies, and experimental methodology.
 
 ## Dependencies
 
