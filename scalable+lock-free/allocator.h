@@ -220,14 +220,14 @@ struct defaultSlabProxy {
             return nullptr;
 
         // check capacity BEFORE tryAlloc
-        if(currentCount >- maxObjCount){
+        if(currentCount >= maxObjCount){
             intr::atomic::store_release(&reservationState, static_cast<uint32_t>(FULL));
             return nullptr;
         }
 
         // resrver count slot..
         AllocState newState = intr::atomic::add_acq_rel(&allocState, (AllocState)1);
-        size_t newCount = newState & COUNT_MASK;
+        size_t newCount = (newState & COUNT_MASK) + 1;
 
         // check!
         if(newCount > maxObjCount){
@@ -739,5 +739,5 @@ class SimpleAllocator {
 }; // end of simpleAlloc
 
 // smaller slabs!!
-typedef SlabArena<Size<1024*1024>, defaultSlabProxy, Slab<4096>> TestSlabArena; // 4KB slabs
+typedef SlabArena<Size<8*1024*1024>, defaultSlabProxy, Slab<4096>> TestSlabArena; // 4KB slabs
 typedef SimpleAllocator<TestSlabArena> TestAllocator;

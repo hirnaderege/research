@@ -1,0 +1,54 @@
+Parallel Test
+==============
+
+Hardware concurrency: 80 threads
+Test Slab Arena Size: 256 slabs
+Slab Size: 4096 bytes
+
+=== Basic Parallel Test ===
+:( - Failed to  allocate object of size 256 with 98.8735% capacity left
+:( - Failed: Allocation index for size 512 at 0x7f7682302018 exceeds arena bounds!
+:( - Failed to  allocate object of size 64 with 98.1949% capacity left
+:( - Failed to  allocate object of size 256 with 98.2391% capacity left
+Thread 1 done: 4693 allocs, 4531 frees, 0 alloc_fails, 776 tracker_fails, 0 corruptions, 0 free_fails
+Thread 2 done: 4580 allocs, 4513 frees, 0 alloc_fails, 903 tracker_fails, 0 corruptions, 3 free_fails
+Thread 4 done: 4588 allocs, 4562 frees, 0 alloc_fails, 848 tracker_fails, 0 corruptions, 0 free_fails
+Thread 3 done: 4719 allocs, 4577 frees, 0 alloc_fails, 703 tracker_fails, 0 corruptions, 1 free_fails
+
+Results:
+Duration: 13ms
+Allocs: 18580
+Frees: 18576
+Tracking Failures: 3229
+Reservation failures: 0
+Leaks: 4
+Success rate: 92.0045%
+:( leaks detected!
+
+=== High contention parallel test ===
+Thread 2 done: 267 allocs, 222 frees, 0 alloc_fails, 11 tracker_fails, 0 corruptions, 0 free_fails
+Thread 4 done: 255 allocs, 226 frees, 0 alloc_fails, 19 tracker_fails, 0 corruptions, 0 free_fails
+Thread 1 done: 273 allocs, 215 frees, 0 alloc_fails, 11 tracker_fails, 0 corruptions, 1 free_fails
+Thread 3 done: 260 allocs, 224 frees, 0 alloc_fails, 16 tracker_fails, 0 corruptions, 0 free_fails
+
+Results:
+Threads: 4
+Duration: 5000ms
+Allocs: 1055
+Frees: 1054
+Tracking failures: 57
+Reservation failures: 0
+Leaks: 1
+Throughput: 421 ops/sec
+:( Leaks under contention!
+
+=== Stress Test ===
+Round 1
+Thread 2 done: 243 allocs, 236 frees, 0 alloc_fails, 21 tracker_fails, 0 corruptions, 0 free_fails
+Thread 1 done: 255 allocs, 228 frees, 0 alloc_fails, 17 tracker_fails, 0 corruptions, 0 free_fails
+Thread 4 done: 269 allocs, 214 frees, 0 alloc_fails, 16 tracker_fails, 0 corruptions, 1 free_fails
+Thread 3 done: 247 allocs, 221 frees, 0 alloc_fails, 32 tracker_fails, 0 corruptions, 0 free_fails
+  Round 1: 0ms, 1014 allocs, 1013 frees, 86 tracking fails, 0 res fails, 1 leaks
+:) Stress test done!
+
+All tests done!

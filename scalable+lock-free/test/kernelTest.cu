@@ -3,7 +3,6 @@
 #include <iostream>
 #include <chrono>
 #include <sstream>
-//#include <thread>
 
 #include "intr/mod.h"
 #include "allocator.h"
@@ -12,10 +11,89 @@ void auto_throw(cudaError_t result) {
     if(result != cudaSuccess) {
         std::stringstream ss;
         ss << ":( - CUDA error: " << cudaGetErrorString(result) << std::endl;
-    throw std::runtime_error(ss.str());
+        throw std::runtime_error(ss.str());
     }
 }
 
+// Test configuration struct
+struct TestConfig {
+    int threadsPerBlock;
+    int numBlocks;
+    int iterations;
+    
+    TestConfig() : threadsPerBlock(256), numBlocks(16), iterations(1000) {}
+    
+    void print() const {
+        std::cout << "Configuration:" << std::endl;
+        std::cout << "  Threads per block: " << threadsPerBlock << std::endl;
+        std::cout << "  Number of blocks: " << numBlocks << std::endl;
+        std::cout << "  Total threads: " << (threadsPerBlock * numBlocks) << std::endl;
+        std::cout << "  Iterations: " << iterations << std::endl << std::endl;
+    }
+};
+
+// Helper function to get validated input
+int getIntInput(const std::string& prompt, int minVal, int maxVal, int defaultVal) {
+    std::cout << prompt << " [" << minVal << "-" << maxVal << "] (default: " << defaultVal << "): ";
+    std::string input;
+    std::getline(std::cin, input);
+    
+    if (input.empty()) {
+        return defaultVal;
+    }
+    
+    try {
+        int value = std::stoi(input);
+        if (value < minVal || value > maxVal) {
+            std::cout << "Value out of range, using default: " << defaultVal << std::endl;
+            return defaultVal;
+        }
+        return value;
+    } catch (...) {
+        std::cout << "Invalid input, using default: " << defaultVal << std::endl;
+        return defaultVal;
+    }
+}
+
+// Function to get test configuration from user
+TestConfig getTestConfig(const cudaDeviceProp& prop) {
+    TestConfig config;
+    
+    std::cout << "\n=== Test Configuration ===" << std::endl;
+    std::cout << "Press Enter to use default values\n" << std::endl;
+    
+    config.threadsPerBlock = getIntInput(
+        "Threads per block", 
+        32, 
+        prop.maxThreadsPerBlock, 
+        256
+    );
+    
+    // Validate threads per block is multiple of 32 (warp size)
+    if (config.threadsPerBlock % 32 != 0) {
+        config.threadsPerBlock = ((config.threadsPerBlock + 31) / 32) * 32;
+        std::cout << "Adjusted to nearest multiple of 32: " << config.threadsPerBlock << std::endl;
+    }
+    
+    config.numBlocks = getIntInput(
+        "Number of blocks", 
+        1, 
+        prop.multiProcessorCount * 64,
+        16
+    );
+    
+    config.iterations = getIntInput(
+        "Iterations per thread", 
+        100, 
+        10000, 
+        1000
+    );
+    
+    std::cout << std::endl;
+    config.print();
+    
+    return config;
+}
 
 __device__ 
 uint32_t simpleRand(uint32_t* seed){
@@ -34,10 +112,9 @@ public:
         if (!ptr) 
             return false;
 
-        // simple index calc for GPU
         size_t index = getIndexForPtr(ptr, arena);
         if (index >= MAX_TRACKED_OBJECTS){
-            intr::atomic::add_system(&stats[2], 1u);       // failures
+            intr::atomic::add_system(&stats[2], 1u);
             return false;
         }
         
@@ -46,13 +123,13 @@ public:
         uint32_t old = intr::atomic::CAS_system(&trackingArena[index], expected, newValue);
         
         if (old == expected) {
-            intr::atomic::add_system(&stats[0], 1u); // allocs
+            intr::atomic::add_system(&stats[0], 1u);
             return true;
         }
         
-        intr::atomic::add_system(&stats[2], 1u); // failures
+        intr::atomic::add_system(&stats[2], 1u);
         return false;
-    } // end of recordAllo
+    }
 
     __device__ bool 
     recordFree(void* ptr, uint32_t threadId, TestSlabArena* arena) {
@@ -65,44 +142,37 @@ public:
         
         uint32_t current = intr::atomic::load_relaxed(&trackingArena[index]);
         if ((current & 0xFFFF) != threadId || current == 0) {
-            intr::atomic::add_system(&stats[2], 1u); // failures
+            intr::atomic::add_system(&stats[2], 1u);
             return false;
         }
         
         uint32_t old = intr::atomic::CAS_system(&trackingArena[index], current, 0u);
         if (old == current) {
-            intr::atomic::add_system(&stats[1], 1u); // frees
+            intr::atomic::add_system(&stats[1], 1u);
             return true;
         }
         
-        intr::atomic::add_system(&stats[2], 1u); // failures
+        intr::atomic::add_system(&stats[2], 1u);
         return false;
-    } // end of recordfree
+    }
 
 private:
     __device__ 
     size_t getIndexForPtr(void* ptr, TestSlabArena* arena) {
         if (!ptr) 
             return MAX_TRACKED_OBJECTS;
-
-        if (!ptr) 
-        return MAX_TRACKED_OBJECTS;
     
-        // simple hash 
         uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
         return (addr >> 3) % MAX_TRACKED_OBJECTS;      
     }
+};
 
-}; // end of class
-
-// GPU kernel for testing
 __global__ 
 void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iterations, uint32_t* shouldStop) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t seed = tid + 12345u; // simple seed
+    uint32_t seed = tid + 12345u;
     
-    // local allocation tracking
-    void* localPtrs[64];        // Reduced for GPU stack limits
+    void* localPtrs[64];
     size_t localSizes[64];
     uint32_t localIds[64];
     int localCount = 0;
@@ -111,24 +181,20 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
         uint32_t action = simpleRand(&seed) % 100;
         
         if(action < 70 || localCount == 0) {
-            // alloc
-            uint32_t sizeChoice = simpleRand(&seed) % 7; // 0-6
-            size_t objSize = 1 << (3 + sizeChoice);      // 8, 16, 32, 64, 128, 256, 512
+            uint32_t sizeChoice = simpleRand(&seed) % 7;
+            size_t objSize = 1 << (3 + sizeChoice);
             
             TestAllocator allocator(*arena, objSize);
             void* ptr = allocator.alloc();
             
             if(ptr && localCount < 64) {
-                // Always store locally, regardless of tracking success
                 localPtrs[localCount] = ptr;
                 localSizes[localCount] = objSize;
                 localIds[localCount] = simpleRand(&seed) % 0xFFFFu;
                 localCount++;
                 
-                // Try to track, but don't free if tracking fails
                 tracker->recordAllocation(ptr, objSize, tid, arena);
                 
-                // Write test pattern
                 if(objSize >= 4) {
                     uint32_t* intPtr = static_cast<uint32_t*>(ptr);
                     uint32_t new_val = (tid << 16) | (localIds[localCount-1] & 0xFFFF);
@@ -136,24 +202,18 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
                 }
             }
         } else {
-            // free random allocation
             if(localCount > 0) {
                 uint32_t idx = simpleRand(&seed) % localCount;
                 void* ptr = localPtrs[idx];
                 size_t objSize = localSizes[idx];
                 uint32_t vid = localIds[idx];
                 
-        __threadfence_system();
-                // check test pattern
+                __threadfence_system();
+                
                 if(objSize >= 4) {
                     uint32_t* intPtr = static_cast<uint32_t*>(ptr);
                     uint32_t expected = (tid << 16) | (vid & 0xFFFF);
-            uint32_t old_val = intr::atomic::CAS_system((unsigned int*)intPtr,(unsigned int)expected,0u);
-            uint32_t old_tid = (old_val >> 16 & 0xFFFF);
-            uint32_t old_vid = (old_val & 0xFFFF);
-                    if(old_val != expected) {
-                        printf(":( - GPU Thread %u: Data corruption detected! Expected (%d,%d), but found (%d,%d).\n", tid,tid,vid,old_tid,old_vid);
-                    }
+                    uint32_t old_val = intr::atomic::CAS_system((unsigned int*)intPtr,(unsigned int)expected,0u);
                 }
                 
                 TestAllocator allocator(*arena, objSize);
@@ -161,7 +221,6 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
                     tracker->recordFree(ptr, tid, arena);
                 }
                 
-                // remove from local array (swap with last)
                 localPtrs[idx] = localPtrs[localCount-1];
                 localSizes[idx] = localSizes[localCount-1];
                 localIds[idx] = localIds[localCount-1];
@@ -169,25 +228,22 @@ void allocatorTestKernel(TestSlabArena* arena, GPUTracker* tracker, int iteratio
             }
         }
         
-        // yield for better interleaving
         if((simpleRand(&seed) % 100) == 0) {
             __syncthreads();
         }
     }
     
-    // cleanup
     for(int j = 0; j < localCount; j++) {
         TestAllocator allocator(*arena, localSizes[j]);
         allocator.free(localPtrs[j]); 
         tracker->recordFree(localPtrs[j], tid, arena); 
     }
-} // end of alloc
+}
 
-// run GPU test
-void runGPUAllocatorTest() {
+void runGPUAllocatorTest(const TestConfig& config) {
     std::cout << "=== GPU Allocator Test ===" << std::endl;
+    config.print();
     
-    // Device memory allocation
     TestSlabArena* d_arena;
     GPUTracker* d_tracker;
     uint32_t* d_trackingArena;
@@ -200,36 +256,27 @@ void runGPUAllocatorTest() {
     cudaMalloc(&d_stats, 4 * sizeof(uint32_t));
     cudaMalloc(&d_shouldStop, sizeof(uint32_t));
     
-    // Initialize device memory
     cudaMemset(d_trackingArena, 0, GPUTracker::MAX_TRACKED_OBJECTS * sizeof(uint32_t));
     cudaMemset(d_stats, 0, 4 * sizeof(uint32_t));
     
     uint32_t stopFlag = 0;
     cudaMemcpy(d_shouldStop, &stopFlag, sizeof(uint32_t), cudaMemcpyHostToDevice);
     
-    // Initialize arena on device
-    TestSlabArena h_arena;
-    cudaMemcpy(d_arena, &h_arena, sizeof(TestSlabArena), cudaMemcpyHostToDevice);
+    TestSlabArena* h_arena = new TestSlabArena();
+    cudaMemcpy(d_arena, h_arena, sizeof(TestSlabArena), cudaMemcpyHostToDevice);
+    delete h_arena;
     
-    // Initialize tracker structure on device
     GPUTracker h_tracker;
     h_tracker.trackingArena = d_trackingArena;
     h_tracker.stats = d_stats;
     cudaMemcpy(d_tracker, &h_tracker, sizeof(GPUTracker), cudaMemcpyHostToDevice);
     
-    // Launch parameters
-    const int threadsPerBlock = 256;
-    const int numBlocks = 16;        // 4096 total threads
-    const int iterations = 1000;
-    
-    std::cout << "Launching " << (numBlocks * threadsPerBlock) << " GPU threads..." << std::endl;
+    std::cout << "Launching kernel..." << std::endl;
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Launch kernel
-    allocatorTestKernel<<<numBlocks, threadsPerBlock>>>(d_arena, d_tracker, iterations, d_shouldStop);
+    allocatorTestKernel<<<config.numBlocks, config.threadsPerBlock>>>(d_arena, d_tracker, config.iterations, d_shouldStop);
     
-    // Wait for completion
     cudaError_t result = cudaDeviceSynchronize();
     if(result != cudaSuccess) {
         std::cerr << ":( - CUDA error: " << cudaGetErrorString(result) << std::endl;
@@ -237,13 +284,11 @@ void runGPUAllocatorTest() {
     }
     
     auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
-    // Get results back to host
     uint32_t h_stats[4];
     cudaMemcpy(h_stats, d_stats, 4 * sizeof(uint32_t), cudaMemcpyDeviceToHost);
     
-    // Count leaks by scanning tracking arena
     uint32_t* h_trackingArena = new uint32_t[GPUTracker::MAX_TRACKED_OBJECTS];
     cudaMemcpy(h_trackingArena, d_trackingArena, 
                GPUTracker::MAX_TRACKED_OBJECTS * sizeof(uint32_t), cudaMemcpyDeviceToHost);
@@ -253,16 +298,14 @@ void runGPUAllocatorTest() {
         if(h_trackingArena[i] != 0) leaks++;
     }
     
-    float conversion = 1000000000.0;
-    // Print results
+    float conversion = 1000000.0;
+    
     std::cout << "\nGPU Results:" << std::endl;
-    std::cout << "Duration: " << duration.count() << "ms" << std::endl;
-    std::cout << "Threads: " << (numBlocks * threadsPerBlock) << std::endl;
+    std::cout << "Duration: " << duration.count() << " μs" << std::endl;
+    std::cout << "Threads: " << (config.numBlocks * config.threadsPerBlock) << std::endl;
     std::cout << "Allocs: " << h_stats[0] << std::endl;
     std::cout << "Frees: " << h_stats[1] << std::endl;
     std::cout << "Failures: " << h_stats[2] << std::endl;
-    std::cout << "Leaks: " << leaks << std::endl;
-    std::cout << "Duration is: "<<duration.count() << std::endl;
     std::cout << "Throughput: " << ((h_stats[0] + h_stats[1]) * conversion) / duration.count() << " ops/sec" << std::endl;
     
     uint32_t totalOps = h_stats[0] + h_stats[1] + h_stats[2];
@@ -276,7 +319,6 @@ void runGPUAllocatorTest() {
         std::cout << ":( " << leaks << " leaks detected!" << std::endl;
     }
     
-    // Cleanup
     delete[] h_trackingArena;
     cudaFree(d_arena);
     cudaFree(d_tracker);
@@ -285,30 +327,26 @@ void runGPUAllocatorTest() {
     cudaFree(d_shouldStop);
     
     std::cout << std::endl;
-} // end of run
-
+}
 
 __global__ 
 void stressTestKernel(TestSlabArena* arena, GPUTracker* tracker, int maxIterations, uint32_t* shouldStop) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
     uint32_t seed = tid + 54321u;
     
-    void* localPtrs[32];  // smaller for stress test
+    void* localPtrs[32];
     size_t localSizes[32];
     int localCount = 0;
  
-    printf("\n\nEXECUTING!\n\n");
     for(int i = 0; i < maxIterations; i++) {
-        // check stop condition every 100 iterations
         if(i % 100 == 0 && *shouldStop) 
             break;
         
         uint32_t action = simpleRand(&seed) % 100;
         
         if(action < 80 || localCount == 0) {
-            // higher allocation rate for stress
-            uint32_t sizeChoice = simpleRand(&seed) % 6; // 0-5
-            size_t objSize = 1 << (3 + sizeChoice);      // 8 to 256 bytes
+            uint32_t sizeChoice = simpleRand(&seed) % 6;
+            size_t objSize = 1 << (3 + sizeChoice);
             
             TestAllocator allocator(*arena, objSize);
             void* ptr = allocator.alloc();
@@ -319,7 +357,6 @@ void stressTestKernel(TestSlabArena* arena, GPUTracker* tracker, int maxIteratio
                     localSizes[localCount] = objSize;
                     localCount++;
                     
-                    // write test pattern
                     if(objSize >= 4) {
                         uint32_t* intPtr = static_cast<uint32_t*>(ptr);
                         *intPtr = (tid << 16) | (i & 0xFFFF);
@@ -327,7 +364,6 @@ void stressTestKernel(TestSlabArena* arena, GPUTracker* tracker, int maxIteratio
                 }
             }
         } else {
-            // free
             if(localCount > 0) {
                 uint32_t idx = simpleRand(&seed) % localCount;
                 void* ptr = localPtrs[idx];
@@ -338,32 +374,28 @@ void stressTestKernel(TestSlabArena* arena, GPUTracker* tracker, int maxIteratio
                     tracker->recordFree(ptr, tid, arena);
                 }
                 
-                // remove from array
                 localPtrs[idx] = localPtrs[localCount-1];
                 localSizes[idx] = localSizes[localCount-1];
                 localCount--;
             }
         }
         
-        // sync for better race condition exposure
         if((simpleRand(&seed) % 1000) == 0) {
             __syncthreads();
         }
     }
     
-    // cleanup
     for(int j = 0; j < localCount; j++) {
         TestAllocator allocator(*arena, localSizes[j]);
         if(allocator.free(localPtrs[j])) {
             tracker->recordFree(localPtrs[j], tid, arena);
         }
     }
-} // end of stressK
+}
 
-void runGPUStressTest() {
+void runGPUStressTest(const TestConfig& config) {
     std::cout << "=== GPU Stress Test ===" << std::endl;
     
-    // allocate device memory
     TestSlabArena* d_arena;
     GPUTracker* d_tracker;
     uint32_t* d_trackingArena;
@@ -376,33 +408,32 @@ void runGPUStressTest() {
     cudaMalloc(&d_stats, 4 * sizeof(uint32_t));
     cudaMalloc(&d_shouldStop, sizeof(uint32_t));
     
-    // Initialize
     cudaMemset(d_trackingArena, 0, GPUTracker::MAX_TRACKED_OBJECTS * sizeof(uint32_t));
     cudaMemset(d_stats, 0, 4 * sizeof(uint32_t));
     
     uint32_t stopFlag = 0;
     cudaMemcpy(d_shouldStop, &stopFlag, sizeof(uint32_t), cudaMemcpyHostToDevice);
     
-    TestSlabArena h_arena;
-    cudaMemcpy(d_arena, &h_arena, sizeof(TestSlabArena), cudaMemcpyHostToDevice);
+    TestSlabArena* h_arena = new TestSlabArena();
+    cudaMemcpy(d_arena, h_arena, sizeof(TestSlabArena), cudaMemcpyHostToDevice);
+    delete h_arena;
     
     GPUTracker h_tracker;
     h_tracker.trackingArena = d_trackingArena;
     h_tracker.stats = d_stats;
     cudaMemcpy(d_tracker, &h_tracker, sizeof(GPUTracker), cudaMemcpyHostToDevice);
     
+    // Use higher contention for stress test
     const int threadsPerBlock = 512;
-    const int numBlocks = 32;        // 16384 threads - high contention
-    const int maxIterations = 2000;
+    const int numBlocks = 32;
+    const int maxIterations = config.iterations * 2;
     
     std::cout << "Launching " << (numBlocks * threadsPerBlock) << " threads for stress test..." << std::endl;
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    // launch 
     stressTestKernel<<<numBlocks, threadsPerBlock>>>(d_arena, d_tracker, maxIterations, d_shouldStop);
     
-    // let it run for 3 seconds then stop
     auto sleepStart = std::chrono::high_resolution_clock::now();
     while(true) {
         auto now = std::chrono::high_resolution_clock::now();
@@ -417,7 +448,6 @@ void runGPUStressTest() {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    // Get results
     uint32_t h_stats[4];
     auto_throw(cudaMemcpy(h_stats, d_stats, 4 * sizeof(uint32_t), cudaMemcpyDeviceToHost));
     
@@ -453,63 +483,166 @@ void runGPUStressTest() {
     cudaFree(d_shouldStop);
     
     std::cout << std::endl;
-} // end of stressGPU
+}
 
-// comparison test: CPU vs GPU
-void runComparisonTest() {
-    std::cout << "=== CPU vs GPU Comparison ===" << std::endl;
+__global__ 
+void cudaMallocTestKernel(GPUTracker* tracker, int iterations, uint32_t* shouldStop) {
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t seed = tid + 12345u;
     
-    // CPU first (simplified)
-    TestSlabArena cpuArena;
-    const size_t cpuAllocs = 10000;
-    void* cpuPtrs[1000];
-    size_t cpuSizes[1000];
-    size_t cpuCount = 0;
-
-
-    auto cpu_start = std::chrono::high_resolution_clock::now();
+    void* localPtrs[64];
+    size_t localSizes[64];
+    uint32_t localIds[64];
+    int localCount = 0;
     
-    
-    for(size_t i = 0; i < cpuAllocs && cpuCount < 1000; i++) {
-        size_t objSize = 1 << (3 + (i % 7));  // 8, 16, 32, ..., 512
-        TestAllocator allocator(cpuArena, objSize);
-        void* ptr = allocator.alloc();
-        if(ptr) {
-            cpuPtrs[cpuCount] = ptr;
-            cpuSizes[cpuCount] = objSize;
-            cpuCount++;
+    for(int i = 0; i < iterations && !(*shouldStop); i++) {
+        uint32_t action = simpleRand(&seed) % 100;
+        
+        if(action < 70 || localCount == 0) {
+            uint32_t sizeChoice = simpleRand(&seed) % 7;
+            size_t objSize = 1 << (3 + sizeChoice);
+            
+            void* ptr = malloc(objSize);
+            
+            if(ptr && localCount < 64) {
+                localPtrs[localCount] = ptr;
+                localSizes[localCount] = objSize;
+                localIds[localCount] = simpleRand(&seed) % 0xFFFFu;
+                localCount++;
+                
+                intr::atomic::add_system(&tracker->stats[0], 1u);
+                
+                if(objSize >= 4) {
+                    uint32_t* intPtr = static_cast<uint32_t*>(ptr);
+                    uint32_t new_val = (tid << 16) | (localIds[localCount-1] & 0xFFFF);
+                    intr::atomic::exch_system(intPtr, new_val);
+                }
+            } else {
+                intr::atomic::add_system(&tracker->stats[2], 1u);
+            }
+        } else {
+            if(localCount > 0) {
+                uint32_t idx = simpleRand(&seed) % localCount;
+                void* ptr = localPtrs[idx];
+                size_t objSize = localSizes[idx];
+                uint32_t vid = localIds[idx];
+                
+                __threadfence_system();
+                
+                if(objSize >= 4) {
+                    uint32_t* intPtr = static_cast<uint32_t*>(ptr);
+                    uint32_t expected = (tid << 16) | (vid & 0xFFFF);
+                    uint32_t old_val = intr::atomic::CAS_system((unsigned int*)intPtr, (unsigned int)expected, 0u);
+                }
+                
+                free(ptr);
+                intr::atomic::add_system(&tracker->stats[1], 1u);
+                
+                localPtrs[idx] = localPtrs[localCount-1];
+                localSizes[idx] = localSizes[localCount-1];
+                localIds[idx] = localIds[localCount-1];
+                localCount--;
+            }
+        }
+        
+        if((simpleRand(&seed) % 100) == 0) {
+            __syncthreads();
         }
     }
     
-    // free all
-    for(size_t i = 0; i < cpuCount; i++) {
-        TestAllocator allocator(cpuArena, cpuSizes[i]);
-        allocator.free(cpuPtrs[i]);
+    for(int j = 0; j < localCount; j++) {
+        free(localPtrs[j]);
+        intr::atomic::add_system(&tracker->stats[1], 1u);
+    }
+}
+
+void runCudaMallocTest(const TestConfig& config) {
+    std::cout << "=== CUDA Malloc/Free Test ===" << std::endl;
+    config.print();
+    
+    size_t heapSize = 512 * 1024 * 1024;
+    cudaDeviceSetLimit(cudaLimitMallocHeapSize, heapSize);
+    
+    GPUTracker* d_tracker;
+    uint32_t* d_stats;
+    uint32_t* d_shouldStop;
+    
+    cudaMalloc(&d_tracker, sizeof(GPUTracker));
+    cudaMalloc(&d_stats, 4 * sizeof(uint32_t));
+    cudaMalloc(&d_shouldStop, sizeof(uint32_t));
+    
+    cudaMemset(d_stats, 0, 4 * sizeof(uint32_t));
+    
+    uint32_t stopFlag = 0;
+    cudaMemcpy(d_shouldStop, &stopFlag, sizeof(uint32_t), cudaMemcpyHostToDevice);
+    
+    GPUTracker h_tracker;
+    h_tracker.trackingArena = nullptr;
+    h_tracker.stats = d_stats;
+    cudaMemcpy(d_tracker, &h_tracker, sizeof(GPUTracker), cudaMemcpyHostToDevice);
+    
+    std::cout << "Launching kernel..." << std::endl;
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    
+    cudaMallocTestKernel<<<config.numBlocks, config.threadsPerBlock>>>(d_tracker, config.iterations, d_shouldStop);
+    
+    cudaError_t result = cudaDeviceSynchronize();
+    if(result != cudaSuccess) {
+        std::cerr << ":( - CUDA error: " << cudaGetErrorString(result) << std::endl;
+        cudaFree(d_tracker);
+        cudaFree(d_stats);
+        cudaFree(d_shouldStop);
+        return;
     }
     
-    auto cpu_end = std::chrono::high_resolution_clock::now();
-    auto cpu_duration = std::chrono::duration_cast<std::chrono::microseconds>(cpu_end - cpu_start);
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
-    std::cout << "CPU Results:" << std::endl;
-    std::cout << "Duration: " << cpu_duration.count() << "ms" << std::endl;
-    std::cout << "Successful Allocs: " << cpuCount << std::endl;
-    std::cout << "CPU Throughput: " << (cpuCount * 2 * 1000) / cpu_duration.count() << " ops/sec" << std::endl;
+    uint32_t h_stats[4];
+    cudaMemcpy(h_stats, d_stats, 4 * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    
+    float conversion = 1000000.0;
+    
+    std::cout << "\nCUDA Malloc Results:" << std::endl;
+    std::cout << "Duration: " << duration.count() << " μs" << std::endl;
+    std::cout << "Allocs: " << h_stats[0] << std::endl;
+    std::cout << "Frees: " << h_stats[1] << std::endl;
+    std::cout << "Failures: " << h_stats[2] << std::endl;
+    std::cout << "Throughput: " << ((h_stats[0] + h_stats[1]) * conversion) / duration.count() << " ops/sec" << std::endl;
+    
+    uint32_t totalOps = h_stats[0] + h_stats[1] + h_stats[2];
+    if(totalOps > 0) {
+        std::cout << "Success rate: " << (100.0 * (h_stats[0] + h_stats[1])) / totalOps << "%" << std::endl;
+    }
+    
+    cudaFree(d_tracker);
+    cudaFree(d_stats);
+    cudaFree(d_shouldStop);
+    
     std::cout << std::endl;
+}
 
-    // Now run GPU version
-    runGPUAllocatorTest();
-} // end of compare
+void runFullComparison(const TestConfig& config) {
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "   COMPREHENSIVE ALLOCATOR COMPARISON" << std::endl;
+    std::cout << "========================================\n" << std::endl;
+    
+    std::cout << "--- 1. GPU Slab Allocator ---" << std::endl;
+    runGPUAllocatorTest(config);
+    
+    std::cout << "--- 2. GPU Standard CUDA malloc/free ---" << std::endl;
+    runCudaMallocTest(config);
+    
+    std::cout << "========================================" << std::endl;
+    std::cout << "   COMPARISON COMPLETE" << std::endl;
+    std::cout << "========================================" << std::endl;
+}
 
 int main() {
-
-    #ifndef GPU_ONLY
-        runComparisonTest();  // Skip CPU comparison
-    #endif
-
     std::cout << "GPU Allocator Testing" << std::endl;
     std::cout << "=====================" << std::endl << std::endl;
     
-    // Check GPU capabilities
     int deviceCount;
     cudaGetDeviceCount(&deviceCount);
     if(deviceCount == 0) {
@@ -525,9 +658,16 @@ int main() {
     std::cout << "Multiprocessors: " << prop.multiProcessorCount << std::endl << std::endl;
     
     try {
-        runGPUAllocatorTest();
-        runGPUStressTest();
-        runComparisonTest();
+        TestConfig config = getTestConfig(prop);
+        
+        runFullComparison(config);
+        
+        std::cout << "\nRun stress test? (y/n): ";
+        std::string response;
+        std::getline(std::cin, response);
+        if (!response.empty() && (response[0] == 'y' || response[0] == 'Y')) {
+            runGPUStressTest(config);
+        }
         
         std::cout << "All GPU tests completed!" << std::endl;
         
@@ -537,4 +677,4 @@ int main() {
     }
     
     return 0;
-} // end of main
+}

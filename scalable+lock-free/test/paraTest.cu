@@ -142,9 +142,9 @@ public:
             return true;
         }
 
-        uint32_t bad_size = (expected>>16) & 0xFFFF;
-        uint32_t bad_id   = expected & 0xFFFF;
-        Log() << ":( - Failed to allocate size " << size << ". Expected 0, but found ("<<bad_size<<","<<bad_id<<")" << std::endl;
+        // uint32_t bad_size = (expected>>16) & 0xFFFF;
+        // uint32_t bad_id   = expected & 0xFFFF;
+        // Log() << ":( - Failed to allocate size " << size << ". Expected 0, but found ("<<bad_size<<","<<bad_id<<")" << std::endl;
         intr::atomic::add_system(&totalFailures, size_t{1});
         return false;
     }
@@ -247,7 +247,7 @@ void workerThread(TestSlabArena& arena, ParallelTracker<SIZE_TYPE>& tracker,
                     }
                 } else {
                     // tracker failed, free it back right away
-                    Log() << ":( - Failed to record allocation of size " << objSize << " at " << ptr << std::endl;
+                    // Log() << ":( - Failed to record allocation of size " << objSize << " at " << ptr << std::endl;
                     TestAllocator freeAllocator(arena, objSize);
                     freeAllocator.free(ptr);
                     localTrackerFails++;
